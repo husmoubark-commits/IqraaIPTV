@@ -13,6 +13,11 @@ jobs:
       - name: Unzip project
         run: unzip -o IqraaIPTV.zip
 
+      - name: Apply offline browse patch
+        run: |
+          base64 -d .github/offline_patch_317.b64 > /tmp/offline-patch.zip
+          (cd iptv-player && unzip -o /tmp/offline-patch.zip)
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
