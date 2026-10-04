@@ -47,12 +47,12 @@ jobs:
 
       - name: Build both APKs
         working-directory: iptv-player
-        run: gradle :app:assembleMainDebug :app:assembleSecondDebug --no-daemon --stacktrace
+        run: gradle :app:assemblePrimaryDebug :app:assembleSecondaryDebug --no-daemon --stacktrace
 
       - name: Upload both APKs
         uses: actions/upload-artifact@v4
         with:
           name: IqraaIPTV-dual-3.18-apks
           path: |
-            iptv-player/app/build/outputs/apk/main/debug/app-main-debug.apk
-            iptv-player/app/build/outputs/apk/second/debug/app-second-debug.apk
+            iptv-player/app/build/outputs/apk/primary/debug/app-primary-debug.apk
+            iptv-player/app/build/outputs/apk/secondary/debug/app-secondary-debug.apk
