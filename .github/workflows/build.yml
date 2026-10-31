@@ -56,3 +56,24 @@ jobs:
           path: |
             iptv-player/app/build/outputs/apk/primary/debug/app-primary-debug.apk
             iptv-player/app/build/outputs/apk/secondary/debug/app-secondary-debug.apk
+
+  windows-build:
+    name: Build Windows 10 EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Windows app
+        run: dotnet publish windows-player/VoltixIptvWindows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voltix-IPTV-Windows-10
+          path: windows-player/bin/Release/net8.0-windows/win-x64/publish/VoltixIptvWindows.exe
