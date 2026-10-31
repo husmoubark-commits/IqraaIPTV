@@ -1,0 +1,13 @@
+<Window x:Class="VoltixIptvWindows.PlayerWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Voltix IPTV Player" Width="1100" Height="700"
+    WindowStartupLocation="CenterOwner" Background="Black">
+    <Grid>
+        <MediaElement x:Name="Video" LoadedBehavior="Manual" UnloadedBehavior="Stop"
+                      Stretch="Uniform" MediaFailed="Video_MediaFailed"/>
+        <TextBlock x:Name="ErrorText" Visibility="Collapsed" Foreground="White"
+                   FontSize="20" TextAlignment="Center" VerticalAlignment="Center"
+                   Text="التشغيل يحتاج اتصالًا بالإنترنت"/>
+    </Grid>
+</Window>
