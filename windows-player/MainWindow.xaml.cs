@@ -1,5 +1,4 @@
 using System.IO;
-using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,7 +6,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using IoPath = System.IO.Path;
 
 namespace VoltixIptvWindows;
 
@@ -17,7 +15,8 @@ public partial class MainWindow : Window
     private readonly string CacheDir = IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VoltixIptvWindows");
     private readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
     private JsonObject _cache = new();
-    private string _server = "", _user = "", _pass = "";
+    private string _server = "", _user = "", _pass = "", _m3uUrl = "";
+    private bool _xtream = true;
     private bool _busy;
 
     public MainWindow()
@@ -26,6 +25,10 @@ public partial class MainWindow : Window
         Directory.CreateDirectory(CacheDir);
         LoadSettings();
         LoadCache();
+        if ((_xtream && !string.IsNullOrWhiteSpace(_server) && !string.IsNullOrWhiteSpace(_user)) || (!_xtream && !string.IsNullOrWhiteSpace(_m3uUrl)))
+            ShowBrowse();
+        else
+            SetMode(true);
     }
 
     private string CacheFile => IoPath.Combine(CacheDir, "catalog.json");
@@ -36,12 +39,16 @@ public partial class MainWindow : Window
         try
         {
             var o = JsonNode.Parse(File.ReadAllText(SettingsFile))?.AsObject();
+            _xtream = o?["type"]?.GetValue<string>() != "m3u";
             _server = o?["server"]?.GetValue<string>() ?? "";
             _user = o?["user"]?.GetValue<string>() ?? "";
             _pass = o?["pass"]?.GetValue<string>() ?? "";
-            ServerBox.Text = _server; UserBox.Text = _user; PassBox.Password = _pass;
+            _m3uUrl = o?["m3u"]?.GetValue<string>() ?? "";
+            ProfileBox.Text = o?["profile"]?.GetValue<string>() ?? "";
+            ServerBox.Text = _server; UserBox.Text = _user; PassBox.Password = _pass; M3uBox.Text = _m3uUrl;
+            SetMode(_xtream);
         }
-        catch { }
+        catch { SetMode(true); }
     }
 
     private void LoadCache()
@@ -52,7 +59,7 @@ public partial class MainWindow : Window
             RenderAll();
             StatusText.Text = "تم تحميل البيانات المحفوظة. يمكنك التصفح بدون إنترنت.";
         }
-        catch { StatusText.Text = "أدخل بيانات الاشتراك ثم اضغط دخول / تحديث"; }
+        catch { }
     }
 
     private void SaveSettings()
@@ -60,31 +67,97 @@ public partial class MainWindow : Window
         _server = ServerBox.Text.Trim().TrimEnd('/');
         _user = UserBox.Text.Trim();
         _pass = PassBox.Password;
-        File.WriteAllText(SettingsFile, JsonSerializer.Serialize(new { server = _server, user = _user, pass = _pass }));
+        _m3uUrl = M3uBox.Text.Trim();
+        var profile = string.IsNullOrWhiteSpace(ProfileBox.Text) ? "User" : ProfileBox.Text.Trim();
+        File.WriteAllText(SettingsFile, JsonSerializer.Serialize(new { type = _xtream ? "xtream" : "m3u", profile, server = _server, user = _user, pass = _pass, m3u = _m3uUrl }));
+        ProfileText.Text = profile;
     }
 
-    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    private void SetMode(bool xtream)
+    {
+        _xtream = xtream;
+        XtreamFields.Visibility = xtream ? Visibility.Visible : Visibility.Collapsed;
+        M3uFields.Visibility = xtream ? Visibility.Collapsed : Visibility.Visible;
+        XtreamButton.Background = xtream ? (Brush)FindResource("AccentBrush") : Brushes.Transparent;
+        M3uButton.Background = xtream ? Brushes.Transparent : (Brush)FindResource("AccentBrush");
+    }
+
+    private void XtreamMode_Click(object sender, RoutedEventArgs e) => SetMode(true);
+    private void M3uMode_Click(object sender, RoutedEventArgs e) => SetMode(false);
+
+    private void ShowBrowse()
+    {
+        LoginView.Visibility = Visibility.Collapsed;
+        BrowseView.Visibility = Visibility.Visible;
+        ProfileText.Text = string.IsNullOrWhiteSpace(ProfileBox.Text) ? "User" : ProfileBox.Text.Trim();
+        RenderAll();
+    }
+
+    private void ShowLogin()
+    {
+        BrowseView.Visibility = Visibility.Collapsed;
+        LoginView.Visibility = Visibility.Visible;
+    }
+
+    private async void Login_Click(object sender, RoutedEventArgs e)
+    {
+        LoginError.Text = "";
+        if (_xtream)
+        {
+            if (string.IsNullOrWhiteSpace(ServerBox.Text) || string.IsNullOrWhiteSpace(UserBox.Text) || string.IsNullOrWhiteSpace(PassBox.Password))
+            {
+                LoginError.Text = "املأ رابط السيرفر واسم المستخدم وكلمة المرور.";
+                return;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(M3uBox.Text))
+        {
+            LoginError.Text = "أدخل رابط قائمة M3U.";
+            return;
+        }
+        SaveSettings();
+        ShowBrowse();
+        await RefreshCatalogAsync();
+    }
+
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshCatalogAsync();
+
+    private async Task RefreshCatalogAsync()
     {
         if (_busy) return;
-        SaveSettings();
-        if (string.IsNullOrWhiteSpace(_server) || string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_pass))
+        if (_xtream && (string.IsNullOrWhiteSpace(_server) || string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_pass)))
         {
-            StatusText.Text = "اكتب رابط السيرفر واسم المستخدم وكلمة المرور أولًا.";
+            ShowLogin();
+            LoginError.Text = "املأ بيانات الاشتراك أولًا.";
+            return;
+        }
+        if (!_xtream && string.IsNullOrWhiteSpace(_m3uUrl))
+        {
+            ShowLogin();
+            LoginError.Text = "أدخل رابط قائمة M3U.";
             return;
         }
 
         _busy = true; Progress.Value = 0; StatusText.Text = "جاري تحديث البيانات...";
         try
         {
-            var tasks = new (string key, string action)[] {
-                ("live", "get_live_streams"), ("movies", "get_vod_streams"), ("series", "get_series")
-            };
-            for (int i = 0; i < tasks.Length; i++)
+            if (_xtream)
             {
-                try { _cache[tasks[i].key] = await GetArray(tasks[i].action); }
-                catch { /* keep the last successful cached section */ }
-                Progress.Value = (i + 1) * 100.0 / tasks.Length;
-                StatusText.Text = $"جاري تحديث {i + 1} من {tasks.Length} ({Progress.Value:0}%)";
+                var tasks = new[] { ("live", "get_live_streams"), ("movies", "get_vod_streams"), ("series", "get_series") };
+                for (int i = 0; i < tasks.Length; i++)
+                {
+                    try { _cache[tasks[i].Item1] = await GetArray(tasks[i].Item2); } catch { }
+                    Progress.Value = (i + 1) * 100.0 / tasks.Length;
+                    StatusText.Text = $"جاري تحديث {i + 1} من {tasks.Length} ({Progress.Value:0}%)";
+                }
+            }
+            else
+            {
+                _cache["live"] = await GetM3uArray();
+                _cache["movies"] = new JsonArray();
+                _cache["series"] = new JsonArray();
+                Progress.Value = 100;
+                StatusText.Text = "تم تحميل قائمة M3U (100%)";
             }
             File.WriteAllText(CacheFile, _cache.ToJsonString(JsonOptions));
             RenderAll();
@@ -100,13 +173,44 @@ public partial class MainWindow : Window
 
     private async Task<JsonArray> GetArray(string action)
     {
-        var baseUrl = _server.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? _server : "http://" + _server;
-        var url = $"{baseUrl}/player_api.php?username={Uri.EscapeDataString(_user)}&password={Uri.EscapeDataString(_pass)}&action={action}";
+        var url = $"{BaseUrl()}/player_api.php?username={Uri.EscapeDataString(_user)}&password={Uri.EscapeDataString(_pass)}&action={action}";
         using var response = await Http.GetAsync(url);
         response.EnsureSuccessStatusCode();
-        var text = await response.Content.ReadAsStringAsync();
-        return JsonNode.Parse(text)?.AsArray() ?? new JsonArray();
+        return JsonNode.Parse(await response.Content.ReadAsStringAsync())?.AsArray() ?? new JsonArray();
     }
+
+    private async Task<JsonArray> GetM3uArray()
+    {
+        var text = await Http.GetStringAsync(_m3uUrl);
+        var result = new JsonArray();
+        string name = "", logo = "";
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.StartsWith("#EXTINF:", StringComparison.OrdinalIgnoreCase))
+            {
+                var comma = line.IndexOf(',');
+                name = comma >= 0 ? line[(comma + 1)..].Trim() : "قناة";
+                logo = Between(line, "tvg-logo=\"", "\"") ?? "";
+            }
+            else if (!line.StartsWith("#") && line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(new JsonObject { ["name"] = name, ["stream_icon"] = logo, ["stream_url"] = line });
+                name = ""; logo = "";
+            }
+        }
+        return result;
+    }
+
+    private static string? Between(string value, string left, string right)
+    {
+        var a = value.IndexOf(left, StringComparison.OrdinalIgnoreCase);
+        if (a < 0) return null;
+        a += left.Length; var b = value.IndexOf(right, a, StringComparison.Ordinal);
+        return b < 0 ? null : value[a..b];
+    }
+
+    private string BaseUrl() => (_server.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? _server : "http://" + _server).TrimEnd('/');
 
     private JsonArray Items(string key)
     {
@@ -129,8 +233,7 @@ public partial class MainWindow : Window
             panel.Children.Add(new TextBlock { Text = "لا توجد بيانات محفوظة لهذا القسم.", Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
             return;
         }
-        foreach (var node in items.OfType<JsonObject>())
-            panel.Children.Add(CreateCard(node, type));
+        foreach (var node in items.OfType<JsonObject>()) panel.Children.Add(CreateCard(node, type));
     }
 
     private Border CreateCard(JsonObject item, string type)
@@ -140,9 +243,7 @@ public partial class MainWindow : Window
         var id = item["stream_id"]?.GetValue<int?>() ?? item["series_id"]?.GetValue<int?>() ?? 0;
         var card = new Border { Width = 170, Height = 245, Margin = new Thickness(8), Background = new SolidColorBrush(Color.FromRgb(25, 30, 40)), CornerRadius = new CornerRadius(10), Cursor = System.Windows.Input.Cursors.Hand };
         var stack = new StackPanel();
-        var img = new Image { Height = 190, Stretch = Stretch.UniformToFill };
-        TryImage(img, image);
-        stack.Children.Add(img);
+        var img = new Image { Height = 190, Stretch = Stretch.UniformToFill }; TryImage(img, image); stack.Children.Add(img);
         stack.Children.Add(new TextBlock { Text = title, Foreground = Brushes.White, FontSize = 14, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(6) });
         card.Child = stack;
         card.MouseLeftButtonUp += async (_, _) =>
@@ -150,10 +251,8 @@ public partial class MainWindow : Window
             if (type == "series") await ShowSeries(id, title);
             else
             {
-                var ext = item["container_extension"]?.GetValue<string>() ?? "mp4";
-                var kind = type == "live" ? "live" : "movie";
-                var url = StreamUrl(kind, id, ext);
-                new PlayerWindow(url, title) { Owner = this }.Show();
+                var url = _xtream ? StreamUrl(type == "live" ? "live" : "movie", id, item["container_extension"]?.GetValue<string>() ?? "mp4") : item["stream_url"]?.GetValue<string>() ?? "";
+                if (!string.IsNullOrWhiteSpace(url)) new PlayerWindow(url, title) { Owner = this }.Show();
             }
         };
         return card;
@@ -161,9 +260,8 @@ public partial class MainWindow : Window
 
     private string StreamUrl(string kind, int id, string ext)
     {
-        var baseUrl = _server.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? _server : "http://" + _server;
         var folder = kind == "live" ? "live" : kind == "series" ? "series" : "movie";
-        return $"{baseUrl}/{folder}/{Uri.EscapeDataString(_user)}/{Uri.EscapeDataString(_pass)}/{id}.{ext}";
+        return $"{BaseUrl()}/{folder}/{Uri.EscapeDataString(_user)}/{Uri.EscapeDataString(_pass)}/{id}.{ext}";
     }
 
     private async Task ShowSeries(int id, string title)
@@ -173,21 +271,18 @@ public partial class MainWindow : Window
         {
             var info = await GetObject($"get_series_info&series_id={id}");
             var win = new Window { Owner = this, Title = title, Width = 620, Height = 650, Background = (Brush)FindResource("PageBrush"), FlowDirection = FlowDirection.RightToLeft };
-            var scroll = new ScrollViewer();
-            var panel = new StackPanel { Margin = new Thickness(18) };
-            scroll.Content = panel; win.Content = scroll;
+            var panel = new StackPanel { Margin = new Thickness(18) }; win.Content = new ScrollViewer { Content = panel };
             var eps = info["episodes"]?.AsObject();
             if (eps != null)
                 foreach (var season in eps)
-                    foreach (var epNode in season.Value?.AsArray()?.OfType<JsonObject>() ?? [])
+                    foreach (var ep in season.Value?.AsArray()?.OfType<JsonObject>() ?? [])
                     {
-                        var ep = epNode;
                         var n = ep["episode_num"]?.GetValue<int?>() ?? 0;
                         var epTitle = ep["title"]?.GetValue<string>() ?? $"الحلقة {n}";
                         var b = new Button { Content = $"الحلقة {n}: {epTitle}", Margin = new Thickness(4), Padding = new Thickness(10), HorizontalContentAlignment = HorizontalAlignment.Right };
                         b.Click += (_, _) =>
                         {
-                            var eid = ep["id"]?.GetValue<string>() ?? "";
+                            var eid = ep["id"]?.GetValue<string>() ?? "0";
                             var ext = ep["container_extension"]?.GetValue<string>() ?? "mp4";
                             var url = StreamUrl("series", int.TryParse(eid, out var parsedId) ? parsedId : 0, ext);
                             new PlayerWindow(url, $"{title} - {epTitle}") { Owner = this }.Show();
@@ -202,8 +297,7 @@ public partial class MainWindow : Window
 
     private async Task<JsonObject> GetObject(string query)
     {
-        var baseUrl = _server.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? _server : "http://" + _server;
-        var url = $"{baseUrl}/player_api.php?username={Uri.EscapeDataString(_user)}&password={Uri.EscapeDataString(_pass)}&{query}";
+        var url = $"{BaseUrl()}/player_api.php?username={Uri.EscapeDataString(_user)}&password={Uri.EscapeDataString(_pass)}&{query}";
         using var response = await Http.GetAsync(url); response.EnsureSuccessStatusCode();
         return JsonNode.Parse(await response.Content.ReadAsStringAsync())?.AsObject() ?? new JsonObject();
     }
@@ -211,17 +305,14 @@ public partial class MainWindow : Window
     private static void TryImage(Image img, string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
-        try
-        {
-            var bi = new BitmapImage(); bi.BeginInit(); bi.UriSource = new Uri(url); bi.CacheOption = BitmapCacheOption.OnLoad; bi.EndInit(); img.Source = bi;
-        }
-        catch { }
+        try { var bi = new BitmapImage(); bi.BeginInit(); bi.UriSource = new Uri(url); bi.CacheOption = BitmapCacheOption.OnLoad; bi.EndInit(); img.Source = bi; } catch { }
     }
+
+    private void Downloads_Click(object sender, RoutedEventArgs e) => MessageBox.Show("قسم التنزيلات سيظهر هنا بعد إضافة أول تنزيل.", "Voltix IPTV");
 
     private void Logout_Click(object sender, RoutedEventArgs e)
     {
-        _server = _user = _pass = ""; ServerBox.Clear(); UserBox.Clear(); PassBox.Clear();
-        try { if (File.Exists(SettingsFile)) File.Delete(SettingsFile); } catch { }
+        ShowLogin();
         StatusText.Text = "تم تسجيل الخروج. الكاش المحفوظ ما زال متاحًا.";
     }
 }
