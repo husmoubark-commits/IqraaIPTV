@@ -5,61 +5,75 @@
     WindowStartupLocation="CenterScreen" Background="{StaticResource PageBrush}"
     FlowDirection="RightToLeft">
     <Grid Margin="18">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
+        <Grid x:Name="LoginView" Visibility="Visible">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Width="540" HorizontalAlignment="Center" Margin="20,22">
+                    <TextBlock Text="Voltix IPTV Player" Foreground="White" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center"/>
+                    <TextBlock Text="أدخل بيانات الاشتراك" Foreground="{StaticResource MutedBrush}" FontSize="17" HorizontalAlignment="Center" Margin="0,8,0,22"/>
 
-        <Border Grid.Row="0" Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="14">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                    <TextBlock Text="Voltix IPTV Player" Foreground="White" FontSize="24" FontWeight="Bold"/>
-                    <TextBlock Text="Windows 10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+                    <Border Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="5" HorizontalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="XtreamButton" Content="Xtream Codes" Click="XtreamMode_Click" Padding="22,10" Background="{StaticResource AccentBrush}" Foreground="White"/>
+                            <Button x:Name="M3uButton" Content="رابط M3U" Click="M3uMode_Click" Padding="22,10" Background="Transparent" Foreground="White"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="اسم البروفايل (اختياري)" Foreground="{StaticResource MutedBrush}" Margin="0,18,0,5"/>
+                    <TextBox x:Name="ProfileBox" Padding="10" FontSize="15"/>
+
+                    <StackPanel x:Name="XtreamFields">
+                        <TextBlock Text="رابط السيرفر — مثال: http://host:port" Foreground="{StaticResource MutedBrush}" Margin="0,14,0,5"/>
+                        <TextBox x:Name="ServerBox" Padding="10" FontSize="15"/>
+                        <TextBlock Text="اسم المستخدم" Foreground="{StaticResource MutedBrush}" Margin="0,14,0,5"/>
+                        <TextBox x:Name="UserBox" Padding="10" FontSize="15"/>
+                        <TextBlock Text="كلمة المرور" Foreground="{StaticResource MutedBrush}" Margin="0,14,0,5"/>
+                        <PasswordBox x:Name="PassBox" Padding="10" FontSize="15"/>
+                    </StackPanel>
+
+                    <StackPanel x:Name="M3uFields" Visibility="Collapsed">
+                        <TextBlock Text="رابط قائمة M3U" Foreground="{StaticResource MutedBrush}" Margin="0,14,0,5"/>
+                        <TextBox x:Name="M3uBox" Padding="10" FontSize="15"/>
+                    </StackPanel>
+
+                    <TextBlock x:Name="LoginError" Foreground="#FFFF6B6B" TextWrapping="Wrap" Margin="0,14,0,0"/>
+                    <Button Content="تسجيل الدخول" Click="Login_Click" Height="50" Margin="0,20,0,0" Background="{StaticResource AccentBrush}" Foreground="White" FontSize="16"/>
                 </StackPanel>
-                <TextBox x:Name="ServerBox" Grid.Column="1" Width="210" Margin="8,0" Padding="9" ToolTip="رابط السيرفر"/>
-                <TextBox x:Name="UserBox" Grid.Column="2" Width="150" Margin="8,0" Padding="9" ToolTip="اسم المستخدم"/>
-                <PasswordBox x:Name="PassBox" Grid.Column="3" Width="150" Margin="8,0" Padding="9" ToolTip="كلمة المرور"/>
-                <Button Grid.Column="4" Content="دخول / تحديث" Click="Refresh_Click" Padding="14,9" Margin="8,0" Background="{StaticResource AccentBrush}"/>
-                <Button Grid.Column="5" Content="تسجيل خروج" Click="Logout_Click" Padding="14,9" Margin="8,0"/>
-            </Grid>
-        </Border>
+            </ScrollViewer>
+        </Grid>
 
-        <StackPanel Grid.Row="1" Margin="0,12,0,12">
-            <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Foreground="{StaticResource AccentBrush}"/>
-            <TextBlock x:Name="StatusText" Text="أدخل بيانات الاشتراك ثم اضغط دخول / تحديث"
-                Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
-        </StackPanel>
-
-        <TabControl Grid.Row="2" x:Name="Tabs" Background="{StaticResource PanelBrush}" BorderThickness="0">
-            <TabItem Header="الرئيسية">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <WrapPanel x:Name="HomePanel" Margin="12"/>
-                </ScrollViewer>
-            </TabItem>
-            <TabItem Header="المسلسلات">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <WrapPanel x:Name="SeriesPanel" Margin="12"/>
-                </ScrollViewer>
-            </TabItem>
-            <TabItem Header="الأفلام">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <WrapPanel x:Name="MoviesPanel" Margin="12"/>
-                </ScrollViewer>
-            </TabItem>
-            <TabItem Header="اللايف">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <WrapPanel x:Name="LivePanel" Margin="12"/>
-                </ScrollViewer>
-            </TabItem>
-        </TabControl>
+        <Grid x:Name="BrowseView" Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Voltix IPTV Player" Foreground="White" FontSize="24" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProfileText" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="التنزيلات" Click="Downloads_Click" Padding="14,9" Margin="8,0"/>
+                    <Button Grid.Column="2" Content="تحديث" Click="Refresh_Click" Padding="14,9" Margin="8,0" Background="{StaticResource AccentBrush}"/>
+                    <Button Grid.Column="3" Content="تسجيل خروج" Click="Logout_Click" Padding="14,9" Margin="8,0"/>
+                </Grid>
+            </Border>
+            <StackPanel Grid.Row="1" Margin="0,12,0,12">
+                <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Foreground="{StaticResource AccentBrush}"/>
+                <TextBlock x:Name="StatusText" Text="جاهز" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+            </StackPanel>
+            <TabControl Grid.Row="2" x:Name="Tabs" Background="{StaticResource PanelBrush}" BorderThickness="0">
+                <TabItem Header="الرئيسية"><ScrollViewer VerticalScrollBarVisibility="Auto"><WrapPanel x:Name="HomePanel" Margin="12"/></ScrollViewer></TabItem>
+                <TabItem Header="المسلسلات"><ScrollViewer VerticalScrollBarVisibility="Auto"><WrapPanel x:Name="SeriesPanel" Margin="12"/></ScrollViewer></TabItem>
+                <TabItem Header="الأفلام"><ScrollViewer VerticalScrollBarVisibility="Auto"><WrapPanel x:Name="MoviesPanel" Margin="12"/></ScrollViewer></TabItem>
+                <TabItem Header="اللايف"><ScrollViewer VerticalScrollBarVisibility="Auto"><WrapPanel x:Name="LivePanel" Margin="12"/></ScrollViewer></TabItem>
+            </TabControl>
+        </Grid>
     </Grid>
 </Window>
