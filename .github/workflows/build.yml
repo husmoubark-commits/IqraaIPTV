@@ -124,3 +124,28 @@ jobs:
         with:
           name: IqraaIPTV-Windows-Exact-Android
           path: IqraaIPTV-Windows-Exact-Android.zip
+
+
+  windows-installer:
+    name: Build Windows installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish native Windows app
+        run: dotnet publish windows-player/VoltixIptvWindows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build installer
+        shell: pwsh
+        run: '& "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\IqraaIPTV.iss'
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: IqraaIPTV-Windows-Setup
+          path: installer\installer-output\IqraaIPTV-Windows-Setup.exe
