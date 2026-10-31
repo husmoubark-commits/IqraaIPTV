@@ -100,6 +100,8 @@ jobs:
           java-version: '17'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
       - name: Install Android build packages
         shell: pwsh
         run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
