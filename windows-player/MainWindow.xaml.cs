@@ -162,7 +162,7 @@ public partial class MainWindow : Window
     private string StreamUrl(string kind, int id, string ext)
     {
         var baseUrl = _server.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? _server : "http://" + _server;
-        var folder = kind == "live" ? "live" : "movie";
+        var folder = kind == "live" ? "live" : kind == "series" ? "series" : "movie";
         return $"{baseUrl}/{folder}/{Uri.EscapeDataString(_user)}/{Uri.EscapeDataString(_pass)}/{id}.{ext}";
     }
 
@@ -189,7 +189,7 @@ public partial class MainWindow : Window
                         {
                             var eid = ep["id"]?.GetValue<string>() ?? "";
                             var ext = ep["container_extension"]?.GetValue<string>() ?? "mp4";
-                            var url = StreamUrl("series", 0, ext).Replace("/0.", $"/{eid}.");
+                            var url = StreamUrl("series", int.TryParse(eid, out var parsedId) ? parsedId : 0, ext);
                             new PlayerWindow(url, $"{title} - {epTitle}") { Owner = this }.Show();
                         };
                         panel.Children.Add(b);
