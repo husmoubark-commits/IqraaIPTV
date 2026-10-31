@@ -5,8 +5,8 @@ namespace VoltixIptvWindows;
 
 public partial class PlayerWindow : Window
 {
-    private readonly LibVLC _libVLC;
-    private readonly MediaPlayer _mediaPlayer;
+    private LibVLC? _libVLC;
+    private MediaPlayer? _mediaPlayer;
 
     public PlayerWindow(string url, string title)
     {
@@ -30,14 +30,19 @@ public partial class PlayerWindow : Window
 
         Closed += (_, _) =>
         {
-            try { _mediaPlayer.Stop(); } catch { }
-            try { _mediaPlayer.Dispose(); } catch { }
-            try { _libVLC.Dispose(); } catch { }
+            try { _mediaPlayer?.Stop(); } catch { }
+            try { _mediaPlayer?.Dispose(); } catch { }
+            try { _libVLC?.Dispose(); } catch { }
         };
     }
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
     {
+        if (_mediaPlayer is null)
+        {
+            ShowError();
+            return;
+        }
         if (_mediaPlayer.IsPlaying)
         {
             _mediaPlayer.Pause();
