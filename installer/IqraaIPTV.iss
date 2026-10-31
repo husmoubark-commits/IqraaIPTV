@@ -1,5 +1,5 @@
 #define MyAppName "Iqraa IPTV"
-#define MyAppVersion "3.19.0"
+#define MyAppVersion "3.20.0"
 #define MyAppPublisher "Iqraa IPTV"
 #define MyAppExeName "VoltixIptvWindows.exe"
 #define MyAppId "{{B7B4E0D4-4CF8-4B2B-BD1E-9C2E6F5D0A31}"

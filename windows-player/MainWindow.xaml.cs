@@ -20,9 +20,9 @@ public partial class MainWindow : Window
     private bool _xtream = true;
     private bool _busy;
     private bool _suppressCategorySelection;
-    private string _selectedSeriesCategoryId = "";
-    private readonly HashSet<string> _loadedSeriesCategoryIds = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _loadingSeriesCategoryIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _selectedCategoryIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadedCategoryKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _loadingCategoryKeys = new(StringComparer.Ordinal);
 
     public MainWindow()
     {
@@ -61,58 +61,75 @@ public partial class MainWindow : Window
         try
         {
             _cache = JsonNode.Parse(File.ReadAllText(CacheFile))?.AsObject() ?? new();
-            EnsureSeriesCacheStructure();
+            EnsureAllCategoryCaches();
             RenderAll();
             StatusText.Text = "تم تحميل البيانات المحفوظة. يمكنك التصفح بدون إنترنت.";
         }
         catch { }
     }
 
-    private void EnsureSeriesCacheStructure()
+    private void EnsureAllCategoryCaches()
     {
-        if (_cache["series_categories"] is not JsonArray)
-            _cache["series_categories"] = new JsonArray();
+        EnsureCategoryCache("series_categories", "series_by_category", "series");
+        EnsureCategoryCache("movie_categories", "movies_by_category", "movies");
+        EnsureCategoryCache("live_categories", "live_by_category", "live");
+    }
 
-        if (_cache["series_by_category"] is JsonObject)
-            return;
-
-        var categories = _cache["series_categories"]!.AsArray();
+    private void EnsureCategoryCache(string categoriesKey, string groupedKey, string legacyItemsKey)
+    {
+        if (_cache[categoriesKey] is not JsonArray) _cache[categoriesKey] = new JsonArray();
+        if (_cache[groupedKey] is JsonObject) return;
+        var categories = _cache[categoriesKey]!.AsArray();
         var known = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var c in categories.OfType<JsonObject>())
+        foreach (var cat in categories.OfType<JsonObject>())
         {
-            var id = c["category_id"]?.ToString() ?? c["id"]?.ToString() ?? "";
+            var id = cat["category_id"]?.ToString() ?? cat["id"]?.ToString() ?? "";
             if (!string.IsNullOrWhiteSpace(id)) known.Add(id);
         }
-
         var grouped = new JsonObject();
-        if (_cache["series"] is JsonArray legacy)
+        if (_cache[legacyItemsKey] is JsonArray legacy)
         {
             foreach (var item in legacy.OfType<JsonObject>())
             {
                 var id = item["category_id"]?.ToString();
                 if (string.IsNullOrWhiteSpace(id)) id = "legacy";
-                if (grouped[id] is not JsonArray)
-                    grouped[id] = new JsonArray();
+                if (grouped[id] is not JsonArray) grouped[id] = new JsonArray();
                 grouped[id]!.AsArray().Add(item.DeepClone());
-
-                if (known.Add(id))
-                {
-                    var name = item["category_name"]?.GetValue<string>() ?? (id == "legacy" ? "مسلسلات" : $"تصنيف {id}");
-                    categories.Add(new JsonObject { ["category_id"] = id, ["category_name"] = name });
-                }
+                if (known.Add(id)) categories.Add(new JsonObject { ["category_id"] = id, ["category_name"] = $"تصنيف {id}" });
             }
         }
-        _cache["series_by_category"] = grouped;
+        _cache[groupedKey] = grouped;
     }
 
-    private JsonObject SeriesByCategoryCache
+    private JsonObject CategoryItemsCache(string kind)
     {
-        get
-        {
-            EnsureSeriesCacheStructure();
-            return _cache["series_by_category"]!.AsObject();
-        }
+        EnsureAllCategoryCaches();
+        var key = kind switch { "series" => "series_by_category", "movie" => "movies_by_category", _ => "live_by_category" };
+        return _cache[key]!.AsObject();
     }
+
+    private string CategoriesKey(string kind) => kind switch
+    {
+        "series" => "series_categories",
+        "movie" => "movie_categories",
+        _ => "live_categories"
+    };
+
+    private ListBox CategoryList(string kind) => kind switch
+    {
+        "series" => SeriesCategories,
+        "movie" => MoviesCategories,
+        _ => LiveCategories
+    };
+
+    private WrapPanel CategoryPanel(string kind) => kind switch
+    {
+        "series" => SeriesPanel,
+        "movie" => MoviesPanel,
+        _ => LivePanel
+    };
+
+    private string CategoryCacheKey(string kind, string id) => $"{kind}:{id}";
 
     private void SaveSettings()
     {
@@ -195,21 +212,27 @@ public partial class MainWindow : Window
         {
             if (_xtream)
             {
-                var tasks = new[] { ("live", "get_live_streams"), ("movies", "get_vod_streams"), ("series_categories", "get_series_categories") };
+                var tasks = new[] {
+                    ("live_categories", "get_live_categories"),
+                    ("movie_categories", "get_vod_categories"),
+                    ("series_categories", "get_series_categories")
+                };
                 for (int i = 0; i < tasks.Length; i++)
                 {
                     try { _cache[tasks[i].Item1] = await GetArray(tasks[i].Item2); } catch { }
                     Progress.Value = (i + 1) * 100.0 / tasks.Length;
-                    StatusText.Text = $"جاري تحديث {i + 1} من {tasks.Length} ({Progress.Value:0}%)";
+                    StatusText.Text = $"جاري تحديث التصنيفات {i + 1} من {tasks.Length} ({Progress.Value:0}%)";
                 }
-                EnsureSeriesCacheStructure();
+                EnsureAllCategoryCaches();
             }
             else
             {
-                _cache["live"] = await GetM3uArray();
-                _cache["movies"] = new JsonArray();
                 _cache["series_categories"] = new JsonArray();
                 _cache["series_by_category"] = new JsonObject();
+                _cache["movie_categories"] = new JsonArray();
+                _cache["movies_by_category"] = new JsonObject();
+                _cache["live"] = await GetM3uArray();
+                GroupM3uLiveItems(Items("live"));
                 Progress.Value = 100;
                 StatusText.Text = "تم تحميل قائمة M3U (100%)";
             }
@@ -238,7 +261,7 @@ public partial class MainWindow : Window
     {
         var text = await Http.GetStringAsync(_m3uUrl);
         var result = new JsonArray();
-        string name = "", logo = "";
+        string name = "", logo = "", groupTitle = "";
         foreach (var raw in text.Split('\n'))
         {
             var line = raw.Trim();
@@ -247,11 +270,12 @@ public partial class MainWindow : Window
                 var comma = line.IndexOf(',');
                 name = comma >= 0 ? line[(comma + 1)..].Trim() : "قناة";
                 logo = Between(line, "tvg-logo=\"", "\"") ?? "";
+                groupTitle = Between(line, "group-title=\\\"", "\\\"") ?? "";
             }
             else if (!line.StartsWith("#") && line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
-                result.Add(new JsonObject { ["name"] = name, ["stream_icon"] = logo, ["stream_url"] = line });
-                name = ""; logo = "";
+                result.Add(new JsonObject { ["name"] = name, ["stream_icon"] = logo, ["stream_url"] = line, ["group_title"] = groupTitle });
+                name = ""; logo = ""; groupTitle = "";
             }
         }
         return result;
@@ -274,101 +298,104 @@ public partial class MainWindow : Window
 
     private void RenderAll()
     {
-        RenderList(HomePanel, Items("movies"), "movie");
-        RenderSeriesCategories();
-        RenderList(MoviesPanel, Items("movies"), "movie");
-        RenderList(LivePanel, Items("live"), "live");
-    }
-
-    private void RenderSeriesCategories()
-    {
         _suppressCategorySelection = true;
-        var previousId = _selectedSeriesCategoryId;
-        SeriesCategories.Items.Clear();
-        foreach (var item in Items("series_categories").OfType<JsonObject>())
+        foreach (var kind in new[] { "series", "movie", "live" })
         {
-            var id = item["category_id"]?.ToString() ?? item["id"]?.ToString() ?? "";
-            if (string.IsNullOrWhiteSpace(id)) continue;
-            var name = item["category_name"]?.GetValue<string>() ?? item["name"]?.GetValue<string>() ?? $"تصنيف {id}";
-            SeriesCategories.Items.Add(new ListBoxItem { Content = name, Tag = id, Padding = new Thickness(10, 8, 10, 8), FlowDirection = FlowDirection.RightToLeft });
-        }
-
-        ListBoxItem? selected = null;
-        foreach (var item in SeriesCategories.Items.OfType<ListBoxItem>())
-        {
-            if (string.Equals(item.Tag?.ToString(), previousId, StringComparison.Ordinal))
+            var list = CategoryList(kind);
+            var previousId = _selectedCategoryIds.TryGetValue(kind, out var oldId) ? oldId : "";
+            list.Items.Clear();
+            foreach (var cat in Items(CategoriesKey(kind)).OfType<JsonObject>())
             {
-                selected = item;
-                break;
+                var id = cat["category_id"]?.ToString() ?? cat["id"]?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                list.Items.Add(new ListBoxItem { Content = id == "legacy" ? "تصنيف" : $"تصنيف {id}", Tag = id,
+                    Padding = new Thickness(10, 9, 10, 9), FlowDirection = FlowDirection.RightToLeft });
+            }
+            list.SelectedItem = list.Items.OfType<ListBoxItem>().FirstOrDefault(it =>
+                string.Equals(it.Tag?.ToString(), previousId, StringComparison.Ordinal))
+                ?? list.Items.OfType<ListBoxItem>().FirstOrDefault();
+        }
+        _suppressCategorySelection = false;
+        foreach (var kind in new[] { "series", "movie", "live" })
+        {
+            if (CategoryList(kind).SelectedItem is ListBoxItem selected)
+            {
+                var id = selected.Tag?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                _selectedCategoryIds[kind] = id;
+                RenderCategoryItems(kind, id);
+                _ = LoadCategoryAsync(kind, id);
+            }
+            else
+            {
+                CategoryPanel(kind).Children.Clear();
+                CategoryPanel(kind).Children.Add(new TextBlock { Text = "لا توجد تصنيفات محفوظة. اضغط تحديث لتحميل التصنيفات.",
+                    Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
             }
         }
-        selected ??= SeriesCategories.Items.OfType<ListBoxItem>().FirstOrDefault();
-        SeriesCategories.SelectedItem = selected;
-        _suppressCategorySelection = false;
-
-        if (selected != null)
-        {
-            _selectedSeriesCategoryId = selected.Tag?.ToString() ?? "";
-            RenderSelectedSeriesCategory();
-            _ = LoadSeriesCategoryAsync(_selectedSeriesCategoryId);
-        }
-        else
-        {
-            _selectedSeriesCategoryId = "";
-            SeriesPanel.Children.Clear();
-            SeriesPanel.Children.Add(new TextBlock { Text = "لا توجد تصنيفات محفوظة. اضغط تحديث لتحميل التصنيفات.", Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
-        }
     }
 
-    private async void SeriesCategory_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_suppressCategorySelection || SeriesCategories.SelectedItem is not ListBoxItem selected)
-            return;
+    private async void SeriesCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("series");
+    private async void MoviesCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("movie");
+    private async void LiveCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("live");
 
+    private async Task SelectCategoryAsync(string kind)
+    {
+        if (_suppressCategorySelection || CategoryList(kind).SelectedItem is not ListBoxItem selected) return;
         var id = selected.Tag?.ToString() ?? "";
         if (string.IsNullOrWhiteSpace(id)) return;
-        _selectedSeriesCategoryId = id;
-        RenderSelectedSeriesCategory();
-        await LoadSeriesCategoryAsync(id);
+        _selectedCategoryIds[kind] = id;
+        RenderCategoryItems(kind, id);
+        await LoadCategoryAsync(kind, id);
     }
 
-    private void RenderSelectedSeriesCategory()
+    private void RenderCategoryItems(string kind, string id)
     {
-        if (string.IsNullOrWhiteSpace(_selectedSeriesCategoryId)) return;
-        var cached = SeriesByCategoryCache[_selectedSeriesCategoryId] as JsonArray ?? new JsonArray();
-        RenderList(SeriesPanel, cached, "series");
+        var items = CategoryItemsCache(kind)[id] as JsonArray ?? new JsonArray();
+        RenderList(CategoryPanel(kind), items, kind);
     }
 
-    private async Task LoadSeriesCategoryAsync(string categoryId)
+    private async Task LoadCategoryAsync(string kind, string id)
     {
-        if (!_xtream || string.IsNullOrWhiteSpace(categoryId) || _loadedSeriesCategoryIds.Contains(categoryId) || !_loadingSeriesCategoryIds.Add(categoryId))
-            return;
-
+        var cache = CategoryItemsCache(kind);
+        var key = CategoryCacheKey(kind, id);
+        if (!_xtream || _loadedCategoryKeys.Contains(key) || !_loadingCategoryKeys.Add(key)) return;
         try
         {
-            if (SeriesByCategoryCache.ContainsKey(categoryId))
-            {
-                _loadedSeriesCategoryIds.Add(categoryId);
-                return;
-            }
-
-            StatusText.Text = "جاري تحميل مسلسلات التصنيف المختار...";
-            var items = await GetArray("get_series", categoryId);
-            SeriesByCategoryCache[categoryId] = items;
-            _loadedSeriesCategoryIds.Add(categoryId);
+            if (cache.ContainsKey(id)) { _loadedCategoryKeys.Add(key); return; }
+            var action = kind switch { "series" => "get_series", "movie" => "get_vod_streams", _ => "get_live_streams" };
+            StatusText.Text = "جاري تحميل عناصر التصنيف المختار...";
+            var items = await GetArray(action, id);
+            cache[id] = items;
+            _loadedCategoryKeys.Add(key);
             File.WriteAllText(CacheFile, _cache.ToJsonString(JsonOptions));
-            if (string.Equals(_selectedSeriesCategoryId, categoryId, StringComparison.Ordinal))
-                RenderSelectedSeriesCategory();
-            StatusText.Text = $"تم تحميل {items.Count} مسلسلًا في التصنيف المحدد.";
+            if (_selectedCategoryIds.TryGetValue(kind, out var selectedId) && selectedId == id) RenderCategoryItems(kind, id);
+            StatusText.Text = $"تم تحميل {items.Count} عنصرًا في التصنيف المحدد.";
         }
-        catch
+        catch { StatusText.Text = "تعذر تحميل التصنيف. اعرض آخر بياناته المحفوظة أو تحقق من الاتصال."; }
+        finally { _loadingCategoryKeys.Remove(key); }
+    }
+
+    private void GroupM3uLiveItems(JsonArray items)
+    {
+        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var grouped = new JsonObject();
+        foreach (var item in items.OfType<JsonObject>())
         {
-            StatusText.Text = "تعذر تحميل هذا التصنيف. اعرض آخر بياناته المحفوظة أو تحقق من الاتصال.";
+            var groupName = item["group_title"]?.GetValue<string>() ?? "";
+            if (string.IsNullOrWhiteSpace(groupName)) groupName = "بدون تصنيف";
+            if (!ids.TryGetValue(groupName, out var id))
+            {
+                id = (ids.Count + 1).ToString();
+                ids[groupName] = id; grouped[id] = new JsonArray();
+            }
+            item["category_id"] = id;
+            grouped[id]!.AsArray().Add(item.DeepClone());
         }
-        finally
-        {
-            _loadingSeriesCategoryIds.Remove(categoryId);
-        }
+        var categories = new JsonArray();
+        foreach (var pair in ids) categories.Add(new JsonObject { ["category_id"] = pair.Value, ["category_name"] = $"تصنيف {pair.Value}" });
+        _cache["live_categories"] = categories;
+        _cache["live_by_category"] = grouped;
     }
 
     private void RenderList(WrapPanel panel, JsonArray items, string type)
