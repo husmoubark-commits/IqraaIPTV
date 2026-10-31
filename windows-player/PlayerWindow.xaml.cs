@@ -21,7 +21,7 @@ public partial class PlayerWindow : Window
             _mediaPlayer = new MediaPlayer(_libVLC);
             _mediaPlayer.EncounteredError += (_, _) => Dispatcher.Invoke(() => ShowError());
             Video.MediaPlayer = _mediaPlayer;
-            _mediaPlayer.Play(new Media(_libVLC, new Uri(url), FromType.FromLocation));
+            _mediaPlayer.Play(new Media(_libVLC, url, FromType.FromLocation));
         }
         catch
         {
