@@ -1,0 +1,65 @@
+<Window x:Class="VoltixIptvWindows.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Voltix IPTV Player" Width="1200" Height="760"
+    WindowStartupLocation="CenterScreen" Background="{StaticResource PageBrush}"
+    FlowDirection="RightToLeft">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource PanelBrush}" CornerRadius="12" Padding="14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="Voltix IPTV Player" Foreground="White" FontSize="24" FontWeight="Bold"/>
+                    <TextBlock Text="Windows 10" Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+                </StackPanel>
+                <TextBox x:Name="ServerBox" Grid.Column="1" Width="210" Margin="8,0" Padding="9" ToolTip="رابط السيرفر"/>
+                <TextBox x:Name="UserBox" Grid.Column="2" Width="150" Margin="8,0" Padding="9" ToolTip="اسم المستخدم"/>
+                <PasswordBox x:Name="PassBox" Grid.Column="3" Width="150" Margin="8,0" Padding="9" ToolTip="كلمة المرور"/>
+                <Button Grid.Column="4" Content="دخول / تحديث" Click="Refresh_Click" Padding="14,9" Margin="8,0" Background="{StaticResource AccentBrush}"/>
+                <Button Grid.Column="5" Content="تسجيل خروج" Click="Logout_Click" Padding="14,9" Margin="8,0"/>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="1" Margin="0,12,0,12">
+            <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Foreground="{StaticResource AccentBrush}"/>
+            <TextBlock x:Name="StatusText" Text="أدخل بيانات الاشتراك ثم اضغط دخول / تحديث"
+                Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+        </StackPanel>
+
+        <TabControl Grid.Row="2" x:Name="Tabs" Background="{StaticResource PanelBrush}" BorderThickness="0">
+            <TabItem Header="الرئيسية">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <WrapPanel x:Name="HomePanel" Margin="12"/>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="المسلسلات">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <WrapPanel x:Name="SeriesPanel" Margin="12"/>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="الأفلام">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <WrapPanel x:Name="MoviesPanel" Margin="12"/>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="اللايف">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <WrapPanel x:Name="LivePanel" Margin="12"/>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>
