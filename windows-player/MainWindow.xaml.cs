@@ -7,14 +7,14 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
+using IoPath = System.IO.Path;
 
 namespace VoltixIptvWindows;
 
 public partial class MainWindow : Window
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(25) };
-    private readonly string CacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VoltixIptvWindows");
+    private readonly string CacheDir = IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VoltixIptvWindows");
     private readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
     private JsonObject _cache = new();
     private string _server = "", _user = "", _pass = "";
@@ -28,8 +28,8 @@ public partial class MainWindow : Window
         LoadCache();
     }
 
-    private string CacheFile => Path.Combine(CacheDir, "catalog.json");
-    private string SettingsFile => Path.Combine(CacheDir, "settings.json");
+    private string CacheFile => IoPath.Combine(CacheDir, "catalog.json");
+    private string SettingsFile => IoPath.Combine(CacheDir, "settings.json");
 
     private void LoadSettings()
     {
