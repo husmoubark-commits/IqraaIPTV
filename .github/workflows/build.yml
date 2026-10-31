@@ -45,11 +45,6 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Inspect Android login UI
-        run: |
-          unzip -p IqraaIPTV.zip iptv-player/app/src/main/java/com/iptv/player/ui/screens/LoginScreen.kt | sed -n '1,260p'
-          unzip -p IqraaIPTV.zip iptv-player/app/src/main/java/com/iptv/player/ui/screens/Nav.kt | sed -n '1,220p' || true
-
       - name: Build both APKs
         working-directory: iptv-player
         run: gradle :app:assemblePrimaryDebug :app:assembleSecondaryDebug --no-daemon --stacktrace
