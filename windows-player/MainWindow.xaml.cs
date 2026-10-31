@@ -270,7 +270,7 @@ public partial class MainWindow : Window
                 var comma = line.IndexOf(',');
                 name = comma >= 0 ? line[(comma + 1)..].Trim() : "قناة";
                 logo = Between(line, "tvg-logo=\"", "\"") ?? "";
-                groupTitle = Between(line, "group-title=\\\"", "\\\"") ?? "";
+                groupTitle = Between(line, "group-title=\"", "\"") ?? "";
             }
             else if (!line.StartsWith("#") && line.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
