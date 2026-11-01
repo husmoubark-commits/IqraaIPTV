@@ -13,6 +13,8 @@ namespace VoltixIptvWindows;
 public partial class MainWindow : Window
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(25) };
+    private static readonly HttpClient ImageHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly SemaphoreSlim ImageGate = new(8);
     private readonly string CacheDir = IoPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VoltixIptvWindows");
     private readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
     private JsonObject _cache = new();
@@ -20,6 +22,10 @@ public partial class MainWindow : Window
     private bool _xtream = true;
     private bool _busy;
     private bool _suppressCategorySelection;
+    private string _activeKind = "series";
+    private string _activeCategoryId = "";
+    private JsonArray _currentItems = new();
+    private int _renderLimit = 48;
     private readonly Dictionary<string, string> _selectedCategoryIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadedCategoryKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> _loadingCategoryKeys = new(StringComparer.Ordinal);
@@ -62,10 +68,8 @@ public partial class MainWindow : Window
         {
             _cache = JsonNode.Parse(File.ReadAllText(CacheFile))?.AsObject() ?? new();
             EnsureAllCategoryCaches();
-            RenderAll();
-            StatusText.Text = "تم تحميل البيانات المحفوظة. يمكنك التصفح بدون إنترنت.";
         }
-        catch { }
+        catch { _cache = new JsonObject(); EnsureAllCategoryCaches(); }
     }
 
     private void EnsureAllCategoryCaches()
@@ -73,6 +77,8 @@ public partial class MainWindow : Window
         EnsureCategoryCache("series_categories", "series_by_category", "series");
         EnsureCategoryCache("movie_categories", "movies_by_category", "movies");
         EnsureCategoryCache("live_categories", "live_by_category", "live");
+        if (_cache["continue_watching"] is not JsonArray)
+            _cache["continue_watching"] = new JsonArray();
     }
 
     private void EnsureCategoryCache(string categoriesKey, string groupedKey, string legacyItemsKey)
@@ -95,7 +101,7 @@ public partial class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(id)) id = "legacy";
                 if (grouped[id] is not JsonArray) grouped[id] = new JsonArray();
                 grouped[id]!.AsArray().Add(item.DeepClone());
-                if (known.Add(id)) categories.Add(new JsonObject { ["category_id"] = id, ["category_name"] = $"تصنيف {id}" });
+                if (known.Add(id)) categories.Add(new JsonObject { ["category_id"] = id, ["category_name"] = id == "legacy" ? "مسلسلات" : $"تصنيف {id}" });
             }
         }
         _cache[groupedKey] = grouped;
@@ -115,18 +121,18 @@ public partial class MainWindow : Window
         _ => "live_categories"
     };
 
-    private ListBox CategoryList(string kind) => kind switch
+    private string SectionName(string kind) => kind switch
     {
-        "series" => SeriesCategories,
-        "movie" => MoviesCategories,
-        _ => LiveCategories
+        "series" => "Series",
+        "movie" => "Movies",
+        _ => "Live TV"
     };
 
-    private WrapPanel CategoryPanel(string kind) => kind switch
+    private string ContentTypeName(string kind) => kind switch
     {
-        "series" => SeriesPanel,
-        "movie" => MoviesPanel,
-        _ => LivePanel
+        "series" => "المسلسلات",
+        "movie" => "الأفلام",
+        _ => "قنوات اللايف"
     };
 
     private string CategoryCacheKey(string kind, string id) => $"{kind}:{id}";
@@ -158,8 +164,9 @@ public partial class MainWindow : Window
     {
         LoginView.Visibility = Visibility.Collapsed;
         BrowseView.Visibility = Visibility.Visible;
+        HomeView.Visibility = Visibility.Visible;
+        SectionView.Visibility = Visibility.Collapsed;
         ProfileText.Text = string.IsNullOrWhiteSpace(ProfileBox.Text) ? "User" : ProfileBox.Text.Trim();
-        RenderAll();
     }
 
     private void ShowLogin()
@@ -168,7 +175,13 @@ public partial class MainWindow : Window
         LoginView.Visibility = Visibility.Visible;
     }
 
-    private async void Login_Click(object sender, RoutedEventArgs e)
+    private void Settings_Click(object sender, RoutedEventArgs e)
+    {
+        BrowseView.Visibility = Visibility.Collapsed;
+        LoginView.Visibility = Visibility.Visible;
+    }
+
+    private void Login_Click(object sender, RoutedEventArgs e)
     {
         LoginError.Text = "";
         if (_xtream)
@@ -186,7 +199,29 @@ public partial class MainWindow : Window
         }
         SaveSettings();
         ShowBrowse();
-        await RefreshCatalogAsync();
+        _ = RefreshCatalogAsync();
+    }
+
+    private void OpenSeries_Click(object sender, RoutedEventArgs e) => OpenSection("series");
+    private void OpenMovies_Click(object sender, RoutedEventArgs e) => OpenSection("movie");
+    private void OpenLive_Click(object sender, RoutedEventArgs e) => OpenSection("live");
+
+    private void OpenSection(string kind)
+    {
+        _activeKind = kind;
+        _activeCategoryId = "";
+        ContentSearchBox.Text = "";
+        CategorySearchBox.Text = "";
+        CurrentSectionTitle.Text = SectionName(kind);
+        HomeView.Visibility = Visibility.Collapsed;
+        SectionView.Visibility = Visibility.Visible;
+        RenderCategories();
+    }
+
+    private void Back_Click(object sender, RoutedEventArgs e)
+    {
+        SectionView.Visibility = Visibility.Collapsed;
+        HomeView.Visibility = Visibility.Visible;
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshCatalogAsync();
@@ -207,7 +242,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        _busy = true; Progress.Value = 0; StatusText.Text = "جاري تحديث البيانات...";
+        _busy = true;
+        Progress.Value = 0;
+        StatusText.Text = "جاري تحديث التصنيفات...";
         try
         {
             if (_xtream)
@@ -219,9 +256,9 @@ public partial class MainWindow : Window
                 };
                 for (int i = 0; i < tasks.Length; i++)
                 {
-                    try { _cache[tasks[i].Item1] = await GetArray(tasks[i].Item2); } catch { }
+                    _cache[tasks[i].Item1] = await GetArray(tasks[i].Item2);
                     Progress.Value = (i + 1) * 100.0 / tasks.Length;
-                    StatusText.Text = $"جاري تحديث التصنيفات {i + 1} من {tasks.Length} ({Progress.Value:0}%)";
+                    StatusText.Text = $"جاري تحديث التصنيفات {i + 1}/{tasks.Length} ({Progress.Value:0}%)";
                 }
                 EnsureAllCategoryCaches();
             }
@@ -237,13 +274,13 @@ public partial class MainWindow : Window
                 StatusText.Text = "تم تحميل قائمة M3U (100%)";
             }
             File.WriteAllText(CacheFile, _cache.ToJsonString(JsonOptions));
-            RenderAll();
-            StatusText.Text = $"تم التحديث والحفظ ({Progress.Value:0}%). البيانات متاحة للتصفح بدون إنترنت.";
+            if (SectionView.Visibility == Visibility.Visible) RenderCategories();
+            StatusText.Text = $"تم التحديث والحفظ ({Progress.Value:0}%).";
         }
         catch
         {
-            RenderAll();
-            StatusText.Text = "تعذر الاتصال. تم عرض آخر بيانات محفوظة إن وُجدت.";
+            StatusText.Text = "تعذر الاتصال. تم الاحتفاظ بآخر بيانات محفوظة.";
+            if (SectionView.Visibility == Visibility.Visible) RenderCategories();
         }
         finally { _busy = false; }
     }
@@ -285,7 +322,8 @@ public partial class MainWindow : Window
     {
         var a = value.IndexOf(left, StringComparison.OrdinalIgnoreCase);
         if (a < 0) return null;
-        a += left.Length; var b = value.IndexOf(right, a, StringComparison.Ordinal);
+        a += left.Length;
+        var b = value.IndexOf(right, a, StringComparison.Ordinal);
         return b < 0 ? null : value[a..b];
     }
 
@@ -296,145 +334,305 @@ public partial class MainWindow : Window
         try { return _cache[key]?.AsArray() ?? new JsonArray(); } catch { return new JsonArray(); }
     }
 
-    private void RenderAll()
+    private void RenderCategories()
     {
         _suppressCategorySelection = true;
-        foreach (var kind in new[] { "series", "movie", "live" })
+        var previous = _selectedCategoryIds.TryGetValue(_activeKind, out var old) ? old : "";
+        CategoryList.Items.Clear();
+        AddCategory("__all__", "ALL");
+        AddCategory("__continue__", "Continue Watching");
+        foreach (var cat in Items(CategoriesKey(_activeKind)).OfType<JsonObject>())
         {
-            var list = CategoryList(kind);
-            var previousId = _selectedCategoryIds.TryGetValue(kind, out var oldId) ? oldId : "";
-            list.Items.Clear();
-            foreach (var cat in Items(CategoriesKey(kind)).OfType<JsonObject>())
-            {
-                var id = cat["category_id"]?.ToString() ?? cat["id"]?.ToString() ?? "";
-                if (string.IsNullOrWhiteSpace(id)) continue;
-                list.Items.Add(new ListBoxItem { Content = id == "legacy" ? "تصنيف" : $"تصنيف {id}", Tag = id,
-                    Padding = new Thickness(10, 9, 10, 9), FlowDirection = FlowDirection.RightToLeft });
-            }
-            list.SelectedItem = list.Items.OfType<ListBoxItem>().FirstOrDefault(it =>
-                string.Equals(it.Tag?.ToString(), previousId, StringComparison.Ordinal))
-                ?? list.Items.OfType<ListBoxItem>().FirstOrDefault();
+            var id = cat["category_id"]?.ToString() ?? cat["id"]?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(id)) continue;
+            var name = cat["category_name"]?.ToString() ?? cat["name"]?.ToString() ?? $"تصنيف {id}";
+            AddCategory(id, name);
         }
+
+        ListBoxItem? selected = CategoryList.Items.OfType<ListBoxItem>().FirstOrDefault(i => i.Tag?.ToString() == previous);
+        selected ??= CategoryList.Items.OfType<ListBoxItem>().FirstOrDefault(i => i.Tag?.ToString() != "__all__" && i.Tag?.ToString() != "__continue__");
+        selected ??= CategoryList.Items.OfType<ListBoxItem>().FirstOrDefault();
+        CategoryList.SelectedItem = selected;
         _suppressCategorySelection = false;
-        foreach (var kind in new[] { "series", "movie", "live" })
+        if (selected != null)
         {
-            if (CategoryList(kind).SelectedItem is ListBoxItem selected)
-            {
-                var id = selected.Tag?.ToString() ?? "";
-                if (string.IsNullOrWhiteSpace(id)) continue;
-                _selectedCategoryIds[kind] = id;
-                RenderCategoryItems(kind, id);
-                _ = LoadCategoryAsync(kind, id);
-            }
-            else
-            {
-                CategoryPanel(kind).Children.Clear();
-                CategoryPanel(kind).Children.Add(new TextBlock { Text = "لا توجد تصنيفات محفوظة. اضغط تحديث لتحميل التصنيفات.",
-                    Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
-            }
+            _activeCategoryId = selected.Tag?.ToString() ?? "";
+            _selectedCategoryIds[_activeKind] = _activeCategoryId;
+            RenderSelectedCategory();
+            _ = LoadCategoryAsync(_activeKind, _activeCategoryId);
         }
+        ApplyCategoryFilter();
     }
 
-    private async void SeriesCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("series");
-    private async void MoviesCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("movie");
-    private async void LiveCategory_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SelectCategoryAsync("live");
-
-    private async Task SelectCategoryAsync(string kind)
+    private void AddCategory(string id, string label)
     {
-        if (_suppressCategorySelection || CategoryList(kind).SelectedItem is not ListBoxItem selected) return;
-        var id = selected.Tag?.ToString() ?? "";
-        if (string.IsNullOrWhiteSpace(id)) return;
-        _selectedCategoryIds[kind] = id;
-        RenderCategoryItems(kind, id);
-        await LoadCategoryAsync(kind, id);
+        CategoryList.Items.Add(new ListBoxItem
+        {
+            Content = label,
+            Tag = id,
+            Padding = new Thickness(10, 9, 10, 9),
+            FlowDirection = FlowDirection.LeftToRight
+        });
     }
 
-    private void RenderCategoryItems(string kind, string id)
+    private async void Category_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var items = CategoryItemsCache(kind)[id] as JsonArray ?? new JsonArray();
-        RenderList(CategoryPanel(kind), items, kind);
+        if (_suppressCategorySelection || CategoryList.SelectedItem is not ListBoxItem selected) return;
+        _activeCategoryId = selected.Tag?.ToString() ?? "";
+        _selectedCategoryIds[_activeKind] = _activeCategoryId;
+        _renderLimit = 48;
+        RenderSelectedCategory();
+        await LoadCategoryAsync(_activeKind, _activeCategoryId);
+    }
+
+    private void RenderSelectedCategory()
+    {
+        if (_activeCategoryId == "__continue__")
+        {
+            _currentItems = Items("continue_watching");
+            RenderList(_currentItems, _activeKind);
+            return;
+        }
+        if (_activeCategoryId == "__all__")
+        {
+            _currentItems = CombineCachedCategories(_activeKind);
+            if (_currentItems.Count == 0)
+            {
+                ItemsPanel.Children.Clear();
+                ItemsPanel.Children.Add(new TextBlock
+                {
+                    Text = "اختار تصنيفًا من القائمة لعرض محتواه وتحميله بسرعة.",
+                    Foreground = Brushes.LightGray, FontSize = 17, Margin = new Thickness(18)
+                });
+                LoadMoreButton.Visibility = Visibility.Collapsed;
+                return;
+            }
+            RenderList(_currentItems, _activeKind);
+            return;
+        }
+        _currentItems = CategoryItemsCache(_activeKind)[_activeCategoryId] as JsonArray ?? new JsonArray();
+        if (_currentItems.Count == 0)
+        {
+            ItemsPanel.Children.Clear();
+            ItemsPanel.Children.Add(new TextBlock { Text = "جاري تحميل التصنيف...", Foreground = Brushes.LightGray, FontSize = 17, Margin = new Thickness(18) });
+            LoadMoreButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+        RenderList(_currentItems, _activeKind);
+    }
+
+    private JsonArray CombineCachedCategories(string kind)
+    {
+        var combined = new JsonArray();
+        foreach (var pair in CategoryItemsCache(kind))
+        {
+            if (pair.Value is JsonArray arr)
+                foreach (var item in arr.OfType<JsonObject>())
+                    combined.Add(item.DeepClone());
+        }
+        return combined;
     }
 
     private async Task LoadCategoryAsync(string kind, string id)
     {
+        if (id == "__all__" || id == "__continue__") return;
         var cache = CategoryItemsCache(kind);
         var key = CategoryCacheKey(kind, id);
-        if (!_xtream || _loadedCategoryKeys.Contains(key) || !_loadingCategoryKeys.Add(key)) return;
+        if (_loadedCategoryKeys.Contains(key) || !_loadingCategoryKeys.Add(key)) return;
         try
         {
-            if (cache.ContainsKey(id)) { _loadedCategoryKeys.Add(key); return; }
+            if (cache.ContainsKey(id))
+            {
+                _loadedCategoryKeys.Add(key);
+                return;
+            }
             var action = kind switch { "series" => "get_series", "movie" => "get_vod_streams", _ => "get_live_streams" };
-            StatusText.Text = "جاري تحميل عناصر التصنيف المختار...";
+            if (kind == "live" && !_xtream) return;
+            StatusText.Text = $"جاري تحميل {ContentTypeName(kind)}...";
             var items = await GetArray(action, id);
             cache[id] = items;
             _loadedCategoryKeys.Add(key);
             File.WriteAllText(CacheFile, _cache.ToJsonString(JsonOptions));
-            if (_selectedCategoryIds.TryGetValue(kind, out var selectedId) && selectedId == id) RenderCategoryItems(kind, id);
-            StatusText.Text = $"تم تحميل {items.Count} عنصرًا في التصنيف المحدد.";
+            if (_activeKind == kind && _activeCategoryId == id)
+            {
+                _currentItems = items;
+                _renderLimit = 48;
+                RenderList(items, kind);
+            }
+            StatusText.Text = $"تم تحميل {items.Count} عنصرًا.";
         }
-        catch { StatusText.Text = "تعذر تحميل التصنيف. اعرض آخر بياناته المحفوظة أو تحقق من الاتصال."; }
+        catch
+        {
+            StatusText.Text = "تعذر تحميل التصنيف. تم الاحتفاظ بالبيانات المحفوظة إن وُجدت.";
+        }
         finally { _loadingCategoryKeys.Remove(key); }
     }
 
-    private void GroupM3uLiveItems(JsonArray items)
+    private void ApplyCategoryFilter()
     {
-        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var grouped = new JsonObject();
-        foreach (var item in items.OfType<JsonObject>())
+        if (CategoryList.Items.Count == 0) return;
+        var query = CategorySearchBox.Text.Trim();
+        foreach (var item in CategoryList.Items.OfType<ListBoxItem>())
         {
-            var groupName = item["group_title"]?.GetValue<string>() ?? "";
-            if (string.IsNullOrWhiteSpace(groupName)) groupName = "بدون تصنيف";
-            if (!ids.TryGetValue(groupName, out var id))
-            {
-                id = (ids.Count + 1).ToString();
-                ids[groupName] = id; grouped[id] = new JsonArray();
-            }
-            item["category_id"] = id;
-            grouped[id]!.AsArray().Add(item.DeepClone());
+            var label = item.Content?.ToString() ?? "";
+            item.Visibility = string.IsNullOrWhiteSpace(query) || label.Contains(query, StringComparison.OrdinalIgnoreCase)
+                ? Visibility.Visible : Visibility.Collapsed;
         }
-        var categories = new JsonArray();
-        foreach (var pair in ids) categories.Add(new JsonObject { ["category_id"] = pair.Value, ["category_name"] = $"تصنيف {pair.Value}" });
-        _cache["live_categories"] = categories;
-        _cache["live_by_category"] = grouped;
     }
 
-    private void RenderList(WrapPanel panel, JsonArray items, string type)
+    private void CategorySearch_TextChanged(object sender, TextChangedEventArgs e) => ApplyCategoryFilter();
+
+    private void ContentSearch_TextChanged(object sender, TextChangedEventArgs e)
     {
-        panel.Children.Clear();
-        if (items.Count == 0)
+        _renderLimit = 48;
+        if (_currentItems != null) RenderList(_currentItems, _activeKind);
+    }
+
+    private void RenderList(JsonArray items, string type)
+    {
+        ItemsPanel.Children.Clear();
+        var query = ContentSearchBox.Text.Trim();
+        var filtered = items.OfType<JsonObject>()
+            .Where(item => string.IsNullOrWhiteSpace(query) ||
+                (item["name"]?.ToString() ?? "").Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (filtered.Count == 0)
         {
-            panel.Children.Add(new TextBlock { Text = "لا توجد بيانات محفوظة لهذا القسم.", Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
+            ItemsPanel.Children.Add(new TextBlock { Text = "لا توجد عناصر في هذا التصنيف.", Foreground = Brushes.LightGray, FontSize = 18, Margin = new Thickness(20) });
+            LoadMoreButton.Visibility = Visibility.Collapsed;
             return;
         }
-        foreach (var node in items.OfType<JsonObject>()) panel.Children.Add(CreateCard(node, type));
+        var shown = filtered.Take(_renderLimit).ToArray();
+        foreach (var item in shown) ItemsPanel.Children.Add(CreateCard(item, type));
+        LoadMoreButton.Visibility = filtered.Count > shown.Length ? Visibility.Visible : Visibility.Collapsed;
+        LoadMoreButton.Content = $"تحميل المزيد ({shown.Length} من {filtered.Count})";
+    }
+
+    private void LoadMore_Click(object sender, RoutedEventArgs e)
+    {
+        _renderLimit += 48;
+        RenderList(_currentItems, _activeKind);
+    }
+
+    private void ItemsScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.VerticalChange > 0 && ItemsScrollView.ScrollableHeight - ItemsScrollView.VerticalOffset < 120 &&
+            LoadMoreButton.Visibility == Visibility.Visible)
+        {
+            _renderLimit += 48;
+            RenderList(_currentItems, _activeKind);
+        }
     }
 
     private Border CreateCard(JsonObject item, string type)
     {
-        var title = item["name"]?.GetValue<string>() ?? "بدون اسم";
-        var image = item["stream_icon"]?.GetValue<string>() ?? item["cover"]?.GetValue<string>() ?? "";
-        var id = item["stream_id"]?.GetValue<int?>() ?? item["series_id"]?.GetValue<int?>() ?? 0;
-        var card = new Border { Width = 170, Height = 245, Margin = new Thickness(8), Background = new SolidColorBrush(Color.FromRgb(25, 30, 40)), CornerRadius = new CornerRadius(10), Cursor = System.Windows.Input.Cursors.Hand };
+        var title = item["name"]?.ToString() ?? "بدون اسم";
+        var image = item["stream_icon"]?.ToString() ?? item["cover"]?.ToString() ?? "";
+        var kind = item["_kind"]?.ToString() ?? type;
+        var card = new Border
+        {
+            Width = 148, Height = 255, Margin = new Thickness(7),
+            Background = new SolidColorBrush(Color.FromRgb(24, 27, 45)),
+            CornerRadius = new CornerRadius(8), Cursor = System.Windows.Input.Cursors.Hand,
+            ClipToBounds = true
+        };
         var stack = new StackPanel();
-        var img = new Image { Height = 190, Stretch = Stretch.UniformToFill }; TryImage(img, image); stack.Children.Add(img);
-        stack.Children.Add(new TextBlock { Text = title, Foreground = Brushes.White, FontSize = 14, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(6) });
+        var poster = new Border { Height = 208, Background = new SolidColorBrush(Color.FromRgb(31, 36, 58)) };
+        var img = new Image { Stretch = Stretch.UniformToFill };
+        poster.Child = img;
+        if (!string.IsNullOrWhiteSpace(image)) _ = LoadImageAsync(img, image);
+        stack.Children.Add(poster);
+        stack.Children.Add(new TextBlock
+        {
+            Text = title, Foreground = Brushes.White, FontSize = 12, TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center, Margin = new Thickness(5, 6, 5, 4), MaxHeight = 40
+        });
         card.Child = stack;
         card.MouseLeftButtonUp += async (_, _) =>
         {
-            if (type == "series") await ShowSeries(id, title);
-            else
+            var directUrl = item["stream_url"]?.ToString() ?? "";
+            if (!string.IsNullOrWhiteSpace(directUrl))
             {
-                var url = _xtream ? StreamUrl(type == "live" ? "live" : "movie", id, item["container_extension"]?.GetValue<string>() ?? "mp4") : item["stream_url"]?.GetValue<string>() ?? "";
-                if (!string.IsNullOrWhiteSpace(url)) new PlayerWindow(url, title) { Owner = this }.Show();
+                PlayItem(directUrl, title, item, kind);
+                return;
             }
+            if (kind == "series")
+            {
+                var seriesId = ParseId(item["series_id"]?.ToString() ?? item["stream_id"]?.ToString());
+                await ShowSeries(seriesId, title);
+                return;
+            }
+            var id = ParseId(item["stream_id"]?.ToString());
+            var folder = kind == "live" ? "live" : "movie";
+            var url = StreamUrl(folder, id, item["container_extension"]?.ToString() ?? (kind == "live" ? "ts" : "mp4"));
+            if (id > 0) PlayItem(url, title, item, kind);
         };
         return card;
     }
+
+    private static async Task LoadImageAsync(Image image, string url)
+    {
+        try
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out _)) return;
+            await ImageGate.WaitAsync();
+            try
+            {
+                var bytes = await ImageHttp.GetByteArrayAsync(url);
+                using var stream = new MemoryStream(bytes);
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                await image.Dispatcher.InvokeAsync(() => image.Source = bitmap);
+            }
+            finally { ImageGate.Release(); }
+        }
+        catch { }
+    }
+
+    private void PlayItem(string url, string title, JsonObject source, string kind)
+    {
+        AddToContinueWatching(title, source, kind, url);
+        new PlayerWindow(url, title) { Owner = this }.Show();
+    }
+
+    private void AddToContinueWatching(string title, JsonObject source, string kind, string url)
+    {
+        var list = Items("continue_watching");
+        var next = new JsonArray();
+        next.Add(new JsonObject
+        {
+            ["name"] = title, ["stream_url"] = url, ["_kind"] = kind,
+            ["stream_icon"] = source["stream_icon"]?.ToString() ?? source["cover"]?.ToString() ?? ""
+        });
+        foreach (var item in list.OfType<JsonObject>().Take(39))
+        {
+            if ((item["name"]?.ToString() ?? "") == title) continue;
+            next.Add(item.DeepClone());
+        }
+        _cache["continue_watching"] = next;
+        try { File.WriteAllText(CacheFile, _cache.ToJsonString(JsonOptions)); } catch { }
+    }
+
+    private static int ParseId(string? value) => int.TryParse(value, out var id) ? id : 0;
 
     private string StreamUrl(string kind, int id, string ext)
     {
         var folder = kind == "live" ? "live" : kind == "series" ? "series" : "movie";
         return $"{BaseUrl()}/{folder}/{Uri.EscapeDataString(_user)}/{Uri.EscapeDataString(_pass)}/{id}.{ext}";
+    }
+
+    private void PlayEpisode(JsonObject episode, string seriesTitle, string episodeTitle)
+    {
+        var id = ParseId(episode["id"]?.ToString());
+        if (id == 0) return;
+        var ext = episode["container_extension"]?.ToString() ?? "mp4";
+        var url = StreamUrl("series", id, ext);
+        AddToContinueWatching($"{seriesTitle} - {episodeTitle}", new JsonObject { ["name"] = episodeTitle }, "series", url);
+        new PlayerWindow(url, $"{seriesTitle} - {episodeTitle}") { Owner = this }.Show();
     }
 
     private async Task ShowSeries(int id, string title)
@@ -443,49 +641,68 @@ public partial class MainWindow : Window
         try
         {
             var info = await GetObject($"get_series_info&series_id={id}");
-            var win = new Window { Owner = this, Title = title, Width = 620, Height = 650, Background = (Brush)FindResource("PageBrush"), FlowDirection = FlowDirection.RightToLeft };
-            var panel = new StackPanel { Margin = new Thickness(18) }; win.Content = new ScrollViewer { Content = panel };
-            var eps = info["episodes"]?.AsObject();
-            if (eps != null)
-                foreach (var season in eps)
-                    foreach (var ep in season.Value?.AsArray()?.OfType<JsonObject>() ?? [])
+            var win = new Window
+            {
+                Owner = this, Title = title, Width = 760, Height = 720, MinWidth = 600, MinHeight = 500,
+                Background = (Brush)FindResource("PageBrush"), FlowDirection = FlowDirection.RightToLeft
+            };
+            var root = new DockPanel { Margin = new Thickness(18) };
+            var header = new StackPanel { Orientation = Orientation.Horizontal };
+            var back = new Button { Content = "رجوع", Padding = new Thickness(15, 8, 15, 8), Margin = new Thickness(4) };
+            back.Click += (_, _) => win.Close();
+            header.Children.Add(back);
+            header.Children.Add(new TextBlock { Text = title, Foreground = Brushes.White, FontSize = 22, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10) });
+            DockPanel.SetDock(header, Dock.Top);
+            root.Children.Add(header);
+            var list = new StackPanel { Margin = new Thickness(8, 18, 8, 8) };
+            var episodes = info["episodes"]?.AsObject();
+            if (episodes != null)
+            {
+                foreach (var season in episodes)
+                {
+                    list.Children.Add(new TextBlock { Text = season.Key, Foreground = (Brush)FindResource("AccentBrush"), FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(5, 12, 5, 5) });
+                    foreach (var episode in season.Value?.AsArray()?.OfType<JsonObject>() ?? [])
                     {
-                        var n = ep["episode_num"]?.GetValue<int?>() ?? 0;
-                        var epTitle = ep["title"]?.GetValue<string>() ?? $"الحلقة {n}";
-                        var b = new Button { Content = $"الحلقة {n}: {epTitle}", Margin = new Thickness(4), Padding = new Thickness(10), HorizontalContentAlignment = HorizontalAlignment.Right };
-                        b.Click += (_, _) =>
+                        var number = episode["episode_num"]?.ToString() ?? "";
+                        var episodeTitle = episode["title"]?.ToString() ?? $"الحلقة {number}";
+                        var button = new Button
                         {
-                            var eid = ep["id"]?.GetValue<string>() ?? "0";
-                            var ext = ep["container_extension"]?.GetValue<string>() ?? "mp4";
-                            var url = StreamUrl("series", int.TryParse(eid, out var parsedId) ? parsedId : 0, ext);
-                            new PlayerWindow(url, $"{title} - {epTitle}") { Owner = this }.Show();
+                            Content = $"▶   الحلقة {number}: {episodeTitle}",
+                            HorizontalContentAlignment = HorizontalAlignment.Right,
+                            Padding = new Thickness(12), Margin = new Thickness(3),
+                            Background = (Brush)FindResource("PanelBrush"), Foreground = Brushes.White,
+                            BorderThickness = new Thickness(0)
                         };
-                        panel.Children.Add(b);
+                        button.Click += (_, _) => PlayEpisode(episode, title, episodeTitle);
+                        list.Children.Add(button);
                     }
-            if (panel.Children.Count == 0) panel.Children.Add(new TextBlock { Text = "لا توجد حلقات محفوظة.", Foreground = Brushes.White, FontSize = 18 });
+                }
+            }
+            if (list.Children.Count == 0) list.Children.Add(new TextBlock { Text = "لا توجد حلقات متاحة.", Foreground = Brushes.White, FontSize = 18 });
+            root.Children.Add(new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+            win.Content = root;
             win.Show();
         }
-        catch { MessageBox.Show("التصفح متاح، لكن تحميل تفاصيل الحلقات يحتاج اتصالًا بالإنترنت.", "Voltix IPTV", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch { MessageBox.Show("تعذر تحميل تفاصيل المسلسل. تأكد من الاتصال وبيانات الاشتراك.", "Iqraa IPTV", MessageBoxButton.OK, MessageBoxImage.Information); }
     }
 
     private async Task<JsonObject> GetObject(string query)
     {
         var url = $"{BaseUrl()}/player_api.php?username={Uri.EscapeDataString(_user)}&password={Uri.EscapeDataString(_pass)}&{query}";
-        using var response = await Http.GetAsync(url); response.EnsureSuccessStatusCode();
+        using var response = await Http.GetAsync(url);
+        response.EnsureSuccessStatusCode();
         return JsonNode.Parse(await response.Content.ReadAsStringAsync())?.AsObject() ?? new JsonObject();
     }
 
-    private static void TryImage(Image img, string url)
-    {
-        if (string.IsNullOrWhiteSpace(url)) return;
-        try { var bi = new BitmapImage(); bi.BeginInit(); bi.UriSource = new Uri(url); bi.CacheOption = BitmapCacheOption.OnLoad; bi.EndInit(); img.Source = bi; } catch { }
-    }
+    private void Downloads_Click(object sender, RoutedEventArgs e)
+        => MessageBox.Show("قسم التنزيلات سيظهر هنا بعد إضافة أول تنزيل.", "Iqraa IPTV");
 
-    private void Downloads_Click(object sender, RoutedEventArgs e) => MessageBox.Show("قسم التنزيلات سيظهر هنا بعد إضافة أول تنزيل.", "Voltix IPTV");
+    private void MatchSchedule_Click(object sender, RoutedEventArgs e)
+        => MessageBox.Show("جدول المباريات غير متاح في هذا الاشتراك.", "Iqraa IPTV");
 
     private void Logout_Click(object sender, RoutedEventArgs e)
     {
         ShowLogin();
-        StatusText.Text = "تم تسجيل الخروج. الكاش المحفوظ ما زال متاحًا.";
+        StatusText.Text = "تم تسجيل الخروج. الإعدادات والكاش محفوظان.";
     }
 }
