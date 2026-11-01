@@ -575,22 +575,26 @@ public partial class MainWindow : Window
         card.Child = stack;
         card.MouseLeftButtonUp += async (_, _) =>
         {
-            var directUrl = item["stream_url"]?.ToString() ?? "";
-            if (!string.IsNullOrWhiteSpace(directUrl))
-            {
-                PlayItem(directUrl, title, item, kind);
-                return;
-            }
+            var m3uUrl = item["stream_url"]?.ToString() ?? "";
             if (kind == "series")
             {
-                var seriesId = ParseId(item["series_id"]?.ToString() ?? item["stream_id"]?.ToString());
+                var seriesId = ParseId(item["series_id"]?.ToString() ?? item["stream_id"]?.ToString() ?? item["id"]?.ToString());
                 await ShowSeries(seriesId, title);
                 return;
             }
-            var id = ParseId(item["stream_id"]?.ToString());
+            var id = ParseId(item["stream_id"]?.ToString() ?? item["id"]?.ToString());
             var folder = kind == "live" ? "live" : "movie";
-            var url = StreamUrl(folder, id, item["container_extension"]?.ToString() ?? (kind == "live" ? "ts" : "mp4"));
-            if (id > 0) PlayItem(url, title, item, kind);
+            var generatedUrl = id > 0
+                ? StreamUrl(folder, id, item["container_extension"]?.ToString() ?? (kind == "live" ? "ts" : "mp4"))
+                : "";
+            var directUrl = FirstPlayableUrl(item["stream_url"]?.ToString(), item["direct_source"]?.ToString());
+            var primaryUrl = !string.IsNullOrWhiteSpace(directUrl) ? directUrl : generatedUrl;
+            var fallbackUrl = !string.IsNullOrWhiteSpace(directUrl) && !string.IsNullOrWhiteSpace(generatedUrl) &&
+                              !string.Equals(directUrl, generatedUrl, StringComparison.OrdinalIgnoreCase)
+                ? generatedUrl : null;
+            if (!string.IsNullOrWhiteSpace(m3uUrl) && string.IsNullOrWhiteSpace(fallbackUrl))
+                primaryUrl = m3uUrl;
+            if (!string.IsNullOrWhiteSpace(primaryUrl)) PlayItem(primaryUrl, title, item, kind, fallbackUrl);
         };
         return card;
     }
@@ -618,10 +622,10 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private void PlayItem(string url, string title, JsonObject source, string kind)
+    private void PlayItem(string url, string title, JsonObject source, string kind, string? fallbackUrl = null)
     {
         AddToContinueWatching(title, source, kind, url);
-        new PlayerWindow(url, title) { Owner = this }.Show();
+        new PlayerWindow(url, title, fallbackUrl) { Owner = this }.Show();
     }
 
     private void AddToContinueWatching(string title, JsonObject source, string kind, string url)
@@ -644,6 +648,12 @@ public partial class MainWindow : Window
 
     private static int ParseId(string? value) => int.TryParse(value, out var id) ? id : 0;
 
+    private static string FirstPlayableUrl(params string?[] candidates)
+        => candidates.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value) &&
+            Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
+            !value.Equals("0", StringComparison.OrdinalIgnoreCase)) ?? "";
+
     private string StreamUrl(string kind, int id, string ext)
     {
         var folder = kind == "live" ? "live" : kind == "series" ? "series" : "movie";
@@ -652,12 +662,44 @@ public partial class MainWindow : Window
 
     private void PlayEpisode(JsonObject episode, string seriesTitle, string episodeTitle)
     {
-        var id = ParseId(episode["id"]?.ToString());
-        if (id == 0) return;
-        var ext = episode["container_extension"]?.ToString() ?? "mp4";
-        var url = StreamUrl("series", id, ext);
-        AddToContinueWatching($"{seriesTitle} - {episodeTitle}", new JsonObject { ["name"] = episodeTitle }, "series", url);
-        new PlayerWindow(url, $"{seriesTitle} - {episodeTitle}") { Owner = this }.Show();
+        var id = ParseId(episode["id"]?.ToString() ?? episode["stream_id"]?.ToString() ?? episode["episode_id"]?.ToString());
+        var generatedUrl = id > 0
+            ? StreamUrl("series", id, episode["container_extension"]?.ToString() ?? "mp4")
+            : "";
+        var directUrl = FirstPlayableUrl(episode["direct_source"]?.ToString(), episode["stream_url"]?.ToString());
+        var url = !string.IsNullOrWhiteSpace(directUrl) ? directUrl : generatedUrl;
+        if (string.IsNullOrWhiteSpace(url)) return;
+        var fallback = !string.IsNullOrWhiteSpace(directUrl) && !string.IsNullOrWhiteSpace(generatedUrl) &&
+                       !string.Equals(directUrl, generatedUrl, StringComparison.OrdinalIgnoreCase)
+            ? generatedUrl : null;
+        var title = $"{seriesTitle} - {episodeTitle}";
+        AddToContinueWatching(title, new JsonObject { ["name"] = episodeTitle }, "series", url);
+        new PlayerWindow(url, title, fallback) { Owner = this }.Show();
+    }
+
+    private static IEnumerable<(string Season, JsonObject Episode)> EnumerateEpisodes(JsonNode? node)
+    {
+        if (node is JsonArray directEpisodes)
+        {
+            foreach (var episode in directEpisodes.OfType<JsonObject>())
+                yield return ("", episode);
+            yield break;
+        }
+        if (node is not JsonObject seasons) yield break;
+        foreach (var season in seasons)
+        {
+            if (season.Value is JsonArray episodes)
+            {
+                foreach (var episode in episodes.OfType<JsonObject>())
+                    yield return (season.Key, episode);
+            }
+            else if (season.Value is JsonObject seasonObject && seasonObject["episodes"] is JsonArray nestedEpisodes)
+            {
+                var seasonName = seasonObject["name"]?.ToString() ?? seasonObject["season_number"]?.ToString() ?? season.Key;
+                foreach (var episode in nestedEpisodes.OfType<JsonObject>())
+                    yield return (seasonName, episode);
+            }
+        }
     }
 
     private async Task ShowSeries(int id, string title)
@@ -680,30 +722,39 @@ public partial class MainWindow : Window
             DockPanel.SetDock(header, Dock.Top);
             root.Children.Add(header);
             var list = new StackPanel { Margin = new Thickness(8, 18, 8, 8) };
-            var episodes = info["episodes"]?.AsObject();
-            if (episodes != null)
+            var episodesNode = info["episodes"] ?? info["info"]?["episodes"];
+            string? activeSeason = null;
+            foreach (var entry in EnumerateEpisodes(episodesNode))
             {
-                foreach (var season in episodes)
+                if (!string.IsNullOrWhiteSpace(entry.Season) && entry.Season != activeSeason)
                 {
-                    list.Children.Add(new TextBlock { Text = season.Key, Foreground = (Brush)FindResource("AccentBrush"), FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(5, 12, 5, 5) });
-                    foreach (var episode in season.Value?.AsArray()?.OfType<JsonObject>() ?? [])
+                    activeSeason = entry.Season;
+                    list.Children.Add(new TextBlock
                     {
-                        var number = episode["episode_num"]?.ToString() ?? "";
-                        var episodeTitle = episode["title"]?.ToString() ?? $"الحلقة {number}";
-                        var button = new Button
-                        {
-                            Content = $"▶   الحلقة {number}: {episodeTitle}",
-                            HorizontalContentAlignment = HorizontalAlignment.Right,
-                            Padding = new Thickness(12), Margin = new Thickness(3),
-                            Background = (Brush)FindResource("PanelBrush"), Foreground = Brushes.White,
-                            BorderThickness = new Thickness(0)
-                        };
-                        button.Click += (_, _) => PlayEpisode(episode, title, episodeTitle);
-                        list.Children.Add(button);
-                    }
+                        Text = $"الموسم {activeSeason}", Foreground = (Brush)FindResource("AccentBrush"),
+                        FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(5, 12, 5, 5)
+                    });
                 }
+                var episode = entry.Episode;
+                var number = episode["episode_num"]?.ToString() ?? episode["episode"]?.ToString() ?? "";
+                var episodeTitle = episode["title"]?.ToString() ?? episode["name"]?.ToString() ?? $"الحلقة {number}";
+                var button = new Button
+                {
+                    Content = $"▶   الحلقة {number}: {episodeTitle}",
+                    HorizontalContentAlignment = HorizontalAlignment.Right,
+                    Padding = new Thickness(12), Margin = new Thickness(3),
+                    Background = (Brush)FindResource("PanelBrush"), Foreground = Brushes.White,
+                    BorderThickness = new Thickness(0)
+                };
+                button.Click += (_, _) => PlayEpisode(episode, title, episodeTitle);
+                list.Children.Add(button);
             }
-            if (list.Children.Count == 0) list.Children.Add(new TextBlock { Text = "لا توجد حلقات متاحة.", Foreground = Brushes.White, FontSize = 18 });
+            if (list.Children.Count == 0)
+                list.Children.Add(new TextBlock
+                {
+                    Text = "السيرفر لم يرجع حلقات لهذا المسلسل. حدّث القائمة أو راجع بيانات الاشتراك.",
+                    Foreground = Brushes.White, FontSize = 18, TextWrapping = TextWrapping.Wrap
+                });
             root.Children.Add(new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
             win.Content = root;
             win.Show();
