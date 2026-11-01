@@ -318,6 +318,31 @@ public partial class MainWindow : Window
         return result;
     }
 
+    private void GroupM3uLiveItems(JsonArray items)
+    {
+        var groupIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var grouped = new JsonObject();
+        foreach (var item in items.OfType<JsonObject>())
+        {
+            var groupName = item["group_title"]?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(groupName)) groupName = "بدون تصنيف";
+            if (!groupIds.TryGetValue(groupName, out var id))
+            {
+                id = (groupIds.Count + 1).ToString();
+                groupIds[groupName] = id;
+                grouped[id] = new JsonArray();
+            }
+            item["category_id"] = id;
+            grouped[id]!.AsArray().Add(item.DeepClone());
+        }
+
+        var categories = new JsonArray();
+        foreach (var pair in groupIds)
+            categories.Add(new JsonObject { ["category_id"] = pair.Value, ["category_name"] = pair.Key });
+        _cache["live_categories"] = categories;
+        _cache["live_by_category"] = grouped;
+    }
+
     private static string? Between(string value, string left, string right)
     {
         var a = value.IndexOf(left, StringComparison.OrdinalIgnoreCase);
